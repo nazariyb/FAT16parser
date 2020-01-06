@@ -20,8 +20,19 @@ using FileInfo = struct
     uint32_t file_size;
 };
 
+using BoostSectorInfo = struct
+{
+    uint16_t bytes_per_sector;
+    uint8_t sectors_per_cluster;
+    uint8_t number_of_fats;
+    uint16_t sectors_per_fat;
+    uint16_t root_entries;
+    uint16_t reserved_sectors;
+    uint16_t boot_signature;
+};
 
-void print_file_name(char file_name[])
+
+void print_file_name(const std::string & file_name)
 {
     std::string file_name_ext {};
     bool name_started {false}, ext_exists {false};
@@ -42,7 +53,7 @@ void print_file_name(char file_name[])
 
         file_name_ext.insert(0, std::string{file_name[i]});
     }
-    std::cout << file_name_ext << std::endl;
+    std::cout << file_name_ext;
 }
 
 
@@ -78,13 +89,11 @@ void print_date(uint16_t date, uint16_t time)
 }
 
 
-void print_file_info(FileInfo & file_info, const std::string & data, off_t offset)
+void print_file_info(const FileInfo & file_info)
 {
-    memcpy(&file_info, data.c_str() + offset, 32);
-    if (file_info.file_name[0] == '\0') return;
-
     std::cout << "File name: ";
     print_file_name(file_info.file_name);
+    std::cout << std::endl;
 
     print_file_attributes(file_info);
     
@@ -96,6 +105,39 @@ void print_file_info(FileInfo & file_info, const std::string & data, off_t offse
 
     std::cout << "\tFirst cluster number: " << file_info.first_cluster << std::endl;
     std::cout << "\n";
+}
+
+
+void print_files_recursively(const BoostSectorInfo & bs_info, const std::string & data, off_t clusters_offset=0)
+{
+    // offset for root catalog = size of boot sector + size of all FAT copies
+    int off = bs_info.bytes_per_sector * bs_info.reserved_sectors + 
+            bs_info.bytes_per_sector * bs_info.sectors_per_fat * bs_info.number_of_fats +
+            clusters_offset;
+    int i = 0;
+    while (true)
+    {
+        FileInfo current_file;
+        memcpy(&current_file, data.c_str() + off + 32 * i, 32);
+        if (current_file.file_name[0] == '\0') break;
+
+        print_file_info(current_file);
+
+        if ((current_file.file_attr & 0x10) && current_file.first_cluster != 0)
+        {
+            print_file_name(current_file.file_name);
+            std::cout << " DIRECTORY STARTS\n" << std::endl;
+            
+            print_files_recursively(bs_info, data,
+            // size of root catalog + size of clusters that should be skipped + the fist 2 entries in cluster ("." and "..")
+                32 * bs_info.root_entries + bs_info.sectors_per_cluster * 512 * (current_file.first_cluster - 2) + 64);
+            
+            print_file_name(current_file.file_name);
+            std::cout << " DIRECTORY ENDS\n" << std::endl;
+        }
+        ++i;
+    }
+
 }
 
 
@@ -111,7 +153,7 @@ int main(int argc, char * argv[])
                      std::istreambuf_iterator<char>());
 
     std::cout << "Boot sector info:" << std::endl;
-
+    
 // - Розмір сектора
     uint16_t bytes_per_sector;
     memcpy(&bytes_per_sector, data.c_str() + 0x0B, 2 * 8);
@@ -150,13 +192,17 @@ int main(int argc, char * argv[])
     std::cout << "\tIs boot signature correct: " << (boot_signature == 0xAA55) << std::endl;
 
     std::cout << "Root catalog info:" << std::endl;
-    // offset for root catalog = size of boot sector + size of all FAT copies
-    int off = bytes_per_sector * reserved_sectors + bytes_per_sector * sectors_per_fat * number_of_fats;
-    FileInfo current_file;
-
-    for (int i=0; i < root_entries ; ++i)
-        print_file_info(current_file, data, off + 32 * i);
-
+    print_files_recursively(
+        {
+        bytes_per_sector,
+        sectors_per_cluster,
+        number_of_fats,
+        sectors_per_fat,
+        root_entries,
+        reserved_sectors,
+        boot_signature,
+        },
+        data);
     return 0;
 }
 
